@@ -1,0 +1,867 @@
+---
+title: "Project"
+author: "Group 5"
+date: '2022-04-27'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+rm(list = ls())
+```
+
+
+
+
+```{r}
+library(dplyr)
+library(caret)
+library(scales)
+library(ggplot2)
+library(gridExtra)
+```
+
+# Loading the data set and data set summary
+
+```{r}
+parkinsons <- read.csv('parkinsons_updrs.csv', stringsAsFactors = FALSE)
+
+head(parkinsons)
+```
+
+```{r}
+summary(parkinsons)
+```
+
+
+# Explanation of Attributes
+
+**Subject number** : Integer that uniquely identifies each subject
+
+
+**Subject Age**
+
+
+**Subject gender** ‘0’ - male, ‘1’ - female
+
+
+**Test time** - Time since recruitment into the trial. The integer part is the number of days since recruitment.
+
+**UPDRS**: This is a clinician’s scale for recording symptoms related to Parkinson’s disease. The UPDRS metric consists of 44 sections, where each section addresses different symptoms in different parts of the body. Summing up these 44 sections gives rise to the total-UPDRS score, which spans the range 0-176, with 0 representing perfectly healthy individual and 176 total disability.
+
+
+
+**Motor UPDRS** - Clinician’s motor UPDRS score, linearly interpolated - this forms sections 18-44 from the UPDRS sections
+
+
+**Total_UPDRS** - Clinician’s total UPDRS score, linearly interpolated - this includes all 44 sections
+
+
+**Jitter Percentage** - measure of variation in fundamental frequency
+
+
+**Jitter (Absolute)** - measure of variation in fundamental frequency
+
+
+**Jitter (RAP)** - measure of variation in fundamental frequency
+
+
+**Jitter (PPQ5)** - measure of variation in fundamental frequency
+
+
+**Jitter (DDP)** - measure of variation in fundamental frequency
+
+
+**Shimmer** - measures of variation in amplitude
+
+
+**Shimmer(dB)**- measure of variation in amplitude
+
+
+**Shimmer:APQ3**- measure of variation in amplitude
+
+
+**Shimmer:APQ5**- measure of variation in amplitude
+
+
+**Shimmer:APQ11**- measure of variation in amplitude
+
+
+**Shimmer:DDA**- measure of variation in amplitude
+
+
+**NHR**: measures of ratio of noise to tonal components in the voice
+
+
+**HNR**: measures of ratio of noise to tonal components in the voice
+
+
+**RPDE** - A nonlinear dynamical complexity measure
+
+
+**DFA** - Signal fractal scaling exponent
+
+
+**PPE** - A Non-linear measure of fundamental frequency variation
+
+
+
+
+```{r}
+str(parkinsons)
+```
+
+Based on the minimum values we can see that for variable 'test_time' there are negative values. So we will remove the negative values from the column
+
+```{r}
+parkinsons <- parkinsons[parkinsons$test_time >=0, ]
+
+summary(parkinsons)
+```
+
+
+
+First let us check the number of male and female patients in the data.
+
+```{r}
+male <- nrow(subset(parkinsons, sex == 0))
+
+female <- nrow(subset(parkinsons, sex == 1))
+
+print(c(male, female))
+```
+
+We can see there are 3996 male patient records and 1867 female patient records which implies the parkinsons disease is more prominent in males then females.
+
+```{r}
+#parkinsons$sex <- ifelse(parkinsons$sex == 0, "Male","Female")
+
+#head(parkinsons)
+```
+
+
+
+```{r}
+library(correlation)
+#correlation::correlation(parkinsons,include_factors = FALSE, method = 'pearson')
+```
+```{r}
+library(corrplot)
+corrplot(cor(parkinsons, method = 'pearson'), order = 'AOE')
+```
+We can observe there is high negative correlation between HNR and other variables.But this plot has too many variables and it is a bit cumbersome to understand. Let us plot the correlation for only those variables which have high significance.
+
+```{r}
+corr_simple <- function(data = parkinsons, sig = 0.5){
+  #convert data into numeric in order to run correlations
+  #converting to factor first to keep the integrity of the data. This way each value will turn to numeric rather than NA
+  park_cor <- parkinsons %>% mutate_if(is.character, as.factor)
+  park_cor <- parkinsons %>% mutate_if(is.factor, as.numeric)
+  
+  #running correlation and dropping insignificant ones
+  corr <- cor(park_cor)
+  #droppping duplicates and correlations of 1
+  corr[lower.tri(corr,diag = T)] <- NA
+  corr[corr == 1] <- NA
+  
+  #turning into 3 column table and removing NA values
+  corr <- as.data.frame(as.table(corr))
+  corr <- na.omit(corr)
+  
+  #selecting significant values and sorting with highest correlation
+  corr <- subset(corr, abs(Freq) > sig)
+  corr <- corr[order(-abs(corr$Freq)),]
+  
+  #printing the table
+  print(corr)
+  
+  #turning the correlation table back into matrix for plotting purposes
+  mtx_corr <- reshape2::acast(corr,Var1~Var2, value.var = "Freq")
+  
+  corrplot(mtx_corr, is.corr = F, tl.col = "black", na.label = " ")
+}
+
+corr_simple()
+```
+
+We can now see the correlation plotted for the variables which have high significance. 
+
+From the correlation matrix we could see that motor_UPDRS and total_UPDRS are highly correlated(>0.8) and also from research we found out that motor_UPDRS is included in total_UPDRS and hence we are excluding motor_UPDRS from our analysis.
+
+```{r}
+#Removing motor_UPDRS
+
+parkinsons <- select(parkinsons,-c(5))
+
+#head(parkinsons)
+```
+
+
+```{r}
+# boxplot for total UPDRS by different subjects
+library(ggplot2)
+fill <- "green"
+line <- "black"
+ggplot(parkinsons, aes(x =as.factor(parkinsons$subject.), y=parkinsons$total_UPDRS)) +
+geom_boxplot(fill = fill, colour = line) +
+scale_y_continuous(name = "total UPDRS",
+breaks = seq(5, 60, 0.5),
+limits=c(5, 60)) +
+scale_x_discrete(name = "subject") +
+ggtitle("Boxplot of total_UPDRS and subject")
+```
+From the above graph we could get to know that different subjects are having different spectrum of UPDRS scores (for a 6 month period) and hence it is an important factor in predicting the UPDRS scores.
+
+```{r}
+library(ggplot2)
+fill <- "green"
+line <- "black"
+ggplot(parkinsons, aes(x =as.factor(parkinsons$age), y =parkinsons$total_UPDRS)) +
+geom_boxplot(fill = fill, colour = line) +
+scale_y_continuous(name = "total UPDRS",
+breaks = seq(5, 60, 0.5),
+limits=c(5, 60)) +
+scale_x_discrete(name = "age") +
+ggtitle("Boxplot of total_UPDRS and age")
+```
+From the above box plot, we can get to know that for subjects with age<=65 on average have low total_UPDRS scores and for subjects with age>65 are having higher average total_UPDRS scores. Hence, age is also an important variable in predicting the UPDRS score.
+
+After analyzing the boxplots for subjects and age together, we can get to know that both the predictors combined are very much useful in predicting the UPDRS scores. 
+
+
+
+#### Outlier detection
+
+The key variable of relevance is the total UPDRS (Unified Parkinson's Disease Ratings Score), which measures the clinical impression of Parkinson's disease (PD) severity. To locate outliers, we plot total UPDRS scores against other variables in our data set.
+
+```{r}
+#Scattered plot to look into data distribution
+plot(jitter(total_UPDRS)~., parkinsons)
+```
+
+We can see there are outliers in the data form the plot between Jitter vs UPDRS, for plot Shimmer vs UPDRS, for plot NHR vs UPDRS, for RPDE vs UPDRS, DFA vs UPDRS and PPE vs UPDRS there are outlier observations.
+
+
+We will now plot to check outlier observations using bivariate plots.
+
+```{r}
+library(MVA)
+#boxplots
+bvbox(parkinsons[,5:6], xlab = "total_UPDRS", ylab = "Jitter")
+
+bvbox(parkinsons[,c(5,11)], xlab = "total_UPDRS", ylab = "Shimmer")
+
+bvbox(parkinsons[,c(5,17)], xlab = "total_UPDRS", ylab = "NHR")
+
+bvbox(parkinsons[,c(5,18)], xlab = "total_UPDRS", ylab = "HNR")
+
+bvbox(parkinsons[,c(5,19)], xlab = "total_UPDRS", ylab = "RPDE")
+
+bvbox(parkinsons[,c(5,20)], xlab = "total_UPDRS", ylab = "DFA")
+
+bvbox(parkinsons[,c(5,21)], xlab = "total_UPDRS", ylab = "PPE")
+```
+We know from a fact that HNR and NHR are inversely proportional to voice quality. If high HNR, the patient has superior voice quality, if HNR is low the patient has low voice quality and vice versa. Since, NHR are having high number of outliers as seen from the scattered plot and bivariate plot and because NHR and HNR are inversely proportional, we are removing NHR to reduce the dimentionality.
+
+```{r}
+#Removing NHR variable
+
+parkinsons <- select(parkinsons, -c(17))
+```
+
+
+The plots show a lot of outlier observations in the data. We are using Convex Hull method to remove some outliers.
+
+```{r}
+#Plotting Convex Hull curve
+hull1 <- chull(parkinsons[,5:6])
+parkhull <- match(lab <- rownames(parkinsons[hull1,])
+, rownames(parkinsons))
+plot(parkinsons[,5:6], xlab = "total_UPDRS", ylab = "Jitter")
+polygon(parkinsons$Jitter...[hull1]~parkinsons$total_UPDRS[hull1])
+text(parkinsons[parkhull,5:6], labels = lab
+, pch=".", cex = 0.9)
+```
+
+```{r}
+#Removing outlier observations according to Convex hull
+outlier <- parkinsons[-hull1,]
+
+dim(outlier)
+
+dim(parkinsons)
+
+hull2 <- chull(outlier[,c(5,11)])
+
+parkinsons <- outlier[-hull2,]
+
+hull3 <- chull(outlier[,c(5,16)])
+parkinsons <- outlier[-hull3,]
+
+hull4 <- chull(outlier[,c(5,18)])
+
+parkinsons <- outlier[-hull3,]
+
+hull4 <- chull(parkinsons[,c(6,19)])
+
+outlier <- parkinsons[-hull4,]
+
+hull5 <- chull(outlier[,c(6,20)])
+
+parkinsons <- outlier[-hull5,]
+
+dim(parkinsons)
+```
+
+We have removed outliers using Convex Hull method. We then normalize data and apply Principle Component Analysis to further reduce dimensionality.
+
+```{r}
+#Plot for a variable after removing some outliers.
+
+bvbox(parkinsons[,5:6], xlab = "total_UPDRS", ylab = "Jitter")
+```
+From the above graph we could see that only some of the outliers have been removed using Convex Hull method. So we have decided to use Ensemble Regression methods, such as Random Forests which are very much robust to outliers.
+
+
+
+##### Data Normalization
+
+Before applying PCA, we are normalizing data so as to have best variance explained by PCA.
+
+We have decided to use preProcess() to normalize data to a range of [0,1].
+
+```{r}
+stargazer::stargazer(parkinsons, type = 'text')
+```
+
+```{r}
+
+#parkinsons$subject.<- (parkinsons$subject. - mean(parkinsons$subject.)) / sd(parkinsons$subject.)
+#parkinsons$age <- (parkinsons$age - mean(parkinsons$age)) / sd(parkinsons$age)
+#parkinsons$test_time <- (parkinsons$test_time - mean(parkinsons$test_time)) / sd(parkinsons$test_time)
+#parkinsons$HNR <- (parkinsons$HNR - mean(parkinsons$HNR)) / sd(parkinsons$HNR)
+
+preprocessParams <- preProcess(parkinsons, method = c("range"))
+
+parkinsons_scaled <- predict(preprocessParams, parkinsons)
+
+
+```
+
+```{r}
+stargazer::stargazer(parkinsons_scaled, type = 'text')
+```
+
+
+
+## Principal Componenet Analysis 
+
+```{r}
+parkinsons.pca1 <- prcomp(select(parkinsons_scaled, c(1:4,6:20)), center = TRUE, scale. = TRUE)
+
+summary(parkinsons.pca1)
+
+```
+
+From the PCA done above for all variables we can see that components PC1, PC2, PC3, PC4, PC5, PC6, PC7 and PC8 combined can explain 95% variance. So 8 predictors are very much sufficient to predict total_UPDRS score. This indicates that we would we obtaining a good solution.
+
+```{r}
+#PCA Loadings
+parkinsons.pca1$rotation
+```
+
+#### Scree Plot
+
+```{r}
+pc_var <- parkinsons.pca1$sdev^2
+
+pc_var_prop <- pc_var/sum(pc_var)
+
+p1 <- qplot(y = pc_var_prop)+
+  geom_line()+
+  ylab("Proportion of Variance Explained")+
+  xlab("Principal Component")
+
+p1
+```
+
+
+# Predictive Modeling
+
+The first step for predictive modeling is to split the data into training and testing data. 
+
+Here we are splitting the data into 80/20 ratio.
+
+```{r}
+library(parallel)
+library(doParallel)
+
+cl <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(cl)
+
+set.seed(123)
+trainIndex <- createDataPartition(parkinsons$total_UPDRS, p = .8, list = FALSE)
+
+train_data <- parkinsons[trainIndex,]
+test_data <- parkinsons[-trainIndex,]
+
+#train_data
+#test_data
+
+#index <- sample(1:nrow(parkinsons), as.integer(0.8*nrow(parkinsons)))
+#index[1:20]
+
+#train_data <- parkinsons[index,]
+#test_data <- parkinsons[-index,]
+
+```
+
+There are 4635 training observations and 1159 testing observations. Let us now do the predictive modeling using Random Forest.
+
+
+
+## Random Forest
+
+```{r}
+library(randomForest)
+
+set.seed(500)
+
+
+rf<- randomForest(total_UPDRS~., data = train_data,
+                  mtry = 6, importance = TRUE)
+
+rf
+
+#Testing the performance of the random forest on testing data.
+rf_yhat <- predict(rf, newdata = test_data)
+
+postResample(rf_yhat, test_data$total_UPDRS)
+```
+
+
+
+With R-squared value being 97.3% Random forest does perform well for this data.
+
+Now let us check feature importance of each predictor and plot the features:
+
+```{r}
+importance(rf)
+
+varImpPlot(rf)
+```
+
+Observations: The most important features are subject, age and test_time.
+
+
+Let us evaluate the performance of the model.
+
+We will predict the model based on testing data and compare the actual values with the predicted values and check the correlation between them.
+```{r}
+pred <- predict(rf, test_data, type = 'response')
+
+summary(pred)
+
+summary(parkinsons$total_UPDRS)
+
+cor(pred, test_data$total_UPDRS)
+```
+
+The correlation between the actual and predicted values is 98% which shows both the values are strongly related. Comparing the true and predicted values with MAE:
+
+```{r}
+MAE <- function(actual,predicted){
+  mean(abs(actual - predicted))
+}
+
+MAE(pred, test_data$total_UPDRS)
+```
+
+With the difference being 1.30, we can say the model performs fairly well.
+
+Now we will tune hyperparameters and select the best parameters for this model:
+
+```{r}
+library(lubridate)
+tuneGrid <- data.frame(mtry =1:19)
+
+control <- trainControl(method = 'repeatedcv', 
+                        number = 10,
+                        repeats = 3)
+set.seed(123)
+
+# print out system time before training
+start_t <- Sys.time()
+cat("",cat("Training started at:",format(start_t, "%a %b %d %X %Y")))
+
+rf_tuned <- train(total_UPDRS ~ ., data = train_data,
+                  method = 'rf',
+                  trControl = control,
+                  tuneGrid = tuneGrid)
+
+# print out system time after training
+finish_t <- Sys.time()
+cat("",cat("Training finished at:",format(finish_t, "%a %b %d %X %Y")))
+
+cat("The training process finished in",difftime(finish_t,start_t,units="mins"), "minutes")
+
+print(rf_tuned)
+```
+
+```{r}
+plot(rf_tuned)
+```
+
+After tuning the RF model, the final value of mtry that can be used for the model turned out to be 19 which is the number of predictors. This is same as bagging model because in bagging mtry is the same as number of predictor variables.
+
+
+# Bagging
+
+```{r}
+set.seed(123)
+bag_park <- randomForest(total_UPDRS~., data = train_data,
+                  mtry = 19, importance = TRUE)
+
+bag_park
+
+#Testing the performance with best parameter on testing data.
+rf_yhat <- predict(bag_park, newdata = test_data)
+
+rf_result <- postResample(rf_yhat, test_data$total_UPDRS)
+```
+
+We can see that there is a significant decrease in RMSE value and an increase of 2% in Rsquared when applied bagging model. 
+
+
+
+# Gradient Boosting Machine
+
+```{r}
+#Importing the gbm library
+set.seed(123)
+library(gbm)
+model_gbm = gbm(train_data$total_UPDRS ~.,
+                data = train_data,
+                distribution = "gaussian",
+                cv.folds = 10,
+                shrinkage = .01,
+                n.minobsinnode = 10,
+                n.trees = 500)
+
+print(model_gbm)
+```
+
+```{r}
+summary(model_gbm)
+```
+
+
+Predicting the performance using test data
+
+```{r}
+test1 <-test_data[,-5]
+test2 <- test_data[,5]
+pred <- predict.gbm(model_gbm, test1)
+
+gbm_result <- postResample(pred, test_data$total_UPDRS)
+
+gbm_result
+```
+
+We can see from the above statistics that RMSE value is 8.01 and Rsquared value is 0.479 which shows it performs poor compared to Random Forest. This might be due to high outliers.
+
+
+
+# Support Vector Machine
+```{r}
+library(e1071)
+
+set.seed(123)
+
+preprocessParams <- preProcess(train_data, method = c("scale", "center"))
+
+print(preprocessParams)
+```
+
+```{r}
+train_scaled <-predict(preprocessParams, train_data)
+test_scaled <- predict(preprocessParams, test_data)
+
+svm_cv <- function(data, response, nfold, kernel){
+  set.seed(100)
+  f <- as.formula(paste(response, '~.'))
+  if (kernel == 'radial'){
+    svm_tune <- tune(svm, f, data = parkinsons,
+                     kernel = 'radial',
+                     tuneControl = tune.control(
+                       cross = nfolds, sampling = "cross"),
+                     ranges = list(cost = 10 ^(-2:2), gamma = 10 ^ (-2:2)))
+  
+  } else if(kernel =="linear"){
+    svm_tune <- tune(svm, f, data = parkinsons,
+                     kernel = 'linear',
+                     tuneControl = tune.control(
+                       cross = nfolds, sampling = "cross"),
+                     ranges = list(cost = 10 ^(-2:2)))
+  } else{
+    svm_tune <- tune(svm, f, data = parkinsons,
+                     kernel = 'polynomial',
+                     tuneControl = tune.control(
+                       cross = nfolds, sampling = "cross"),
+                     ranges = list(cost = 10 ^(-2:2)))
+  }
+  
+  print(summary(svm_tune))
+  print(svm_tune$best.parameters)
+  print(svm_tune$best.performance)
+  return(svm_tune)
+}
+
+svm_cv_caret <- function(data, response, nfolds, repeats, kernel){
+  set.seed(100)
+  f <- as.formula(paste(response, '~ .'))
+  tuneGrid <- data.frame(C = 10 ^ (-2: 2))
+  if(kernel == 'svmRadial'){
+    tuneGrid <- data.frame(C = 10 ^ (-2: 2), 
+                           sigma = 10 ^ (-2: 2))
+  } else if(kernel == 'svmPoly'){
+    tuneGrid <- data.frame(C = 10 ^ (-2: 2), 
+                           degree = (1: 5),
+                           scale = 10 ^ (-4: 0))
+  }
+  print(tuneGrid)
+  control <- trainControl(method = 'repeatedcv',
+                          number = nfolds,
+                          repeats = repeats)
+  svm_tuned <- train(f, data = parkinsons,
+                     method = kernel,
+                     trControl = control,
+                     tuneGrid = tuneGrid)
+  print(svm_tuned)
+  print(svm_tuned$bestTune)
+  plot(svm_tuned)
+  return(svm_tuned)
+}
+```
+
+
+
+
+###Using 10-fold Cross Validation method to tune SVM models.
+
+
+
+#### Linear Kernel
+
+```{r}
+#tune_svm_linear <- svm_cv_caret(train_scaled, 'total_UPDRS', 10, 1, 'svmLinear')
+```
+
+
+
+#### Radial Model
+
+```{r}
+#tune_svm_radial <- svm_cv_caret(train_scaled, 'total_UPDRS', 10, 1, 'svmRadial')
+```
+
+
+#### Polynomial Kernel
+
+```{r}
+#tune_svm_poly <- svm_cv_caret(train_scaled, 'total_UPDRS', 10 ,1, 'svmPoly')
+```
+
+
+
+Based on the above values the best kernel for SVM is 'Radial' with C = 1 and gamma = 1. It has the lowest RMSE value of 4.77 and highest Rsquared value of 81%.
+
+
+##### Final SVM Model
+Designing the Final SVM model with best parameters.
+
+```{r}
+svm_count <- svm(total_UPDRS ~., data = train_scaled,kernel = 'radial', cost = 1, gamma = 1, scale = T )
+```
+
+# Artificial Neural Network
+
+For neural network we will split the scaled data.
+
+
+```{r}
+set.seed(500)
+index1 = sample(1:nrow(parkinsons_scaled), as.integer(0.8*nrow(parkinsons_scaled)))
+index1[1:20]
+
+train_data = parkinsons_scaled[index1,]
+test_data = parkinsons_scaled[-index1,]
+```
+
+We will first calculate pre-process parameters from the training data set and then scale the training and testing data.
+```{r}
+preprocessParams <- preProcess(train_data, method = c("range"))
+print(preprocessParams)
+train_scaled <- predict(preprocessParams, train_data)
+test_scaled <- predict(preprocessParams, test_data)
+```
+
+We can see the variables are re-sscaled from 0 to 1. Now we will fit the model on the training data set. To load the neural network model we will use neuralnet() method.
+
+```{r}
+library('neuralnet')
+f <- as.formula(total_UPDRS~.,)
+nn_fit_2 <- neuralnet(f, data = train_scaled, hidden = c(5,3), linear.output=TRUE, stepmax=1e7)
+```
+
+#### Structure of the trained neural network.
+```{r}
+plot(nn_fit_2,rep="best", cex=0.8)
+```
+
+Now we will fit the neural network with 1 hidden layer.
+
+```{r}
+nn_fit_1 <- neuralnet(f, data = train_scaled, hidden = 5, stepmax = 1e7)
+```
+
+#### Structure of the trained neural network with 1 hidden layer
+
+```{r}
+plot(nn_fit_1, rep="best",cex=0.8)
+```
+
+From the above plots we can see that predicted observation is close to the actual observation.
+
+
+# Evaluating Predictive Performance of the Two-Hidden-Layer Model
+
+We are using compute method in the neural network package to do prediction of the test data. 
+
+```{r}
+pred2_norm <- compute(nn_fit_2, test_scaled[-1])
+pred2_norm <- pred2_norm$net.result
+```
+
+```{r}
+plot(test_scaled$total_UPDRS,pred2_norm)
+
+pred2 <- pred2_norm*(max(train_data$total_UPDRS)-min(train_data$total_UPDRS))+ min(train_data$total_UPDRS)
+
+plot(test_data$total_UPDRS,pred2)
+```
+
+# Calculating prediction performance.
+
+
+## Evaluating Predictive Performance of the One-Hidden-Layer Model
+
+```{r}
+pred1_norm <- compute(nn_fit_1, test_scaled[-1])
+pred1_norm <- pred1_norm$net.result
+```
+
+```{r}
+plot(test_scaled$total_UPDRS,pred1_norm)
+
+pred1 <- pred1_norm*(max(train_data$total_UPDRS)- min(train_data$total_UPDRS))+ min(train_data$total_UPDRS)
+
+plot(test_data$total_UPDRS,pred1)
+```
+
+From the above plots we can observe that the predicted observation is not close to the actual observation.
+
+
+
+### Using the test data and three performance measures for model comparison.
+
+#### Performance Random Forest:
+
+```{r}
+
+#rf_yhat <- predict(bag_park, newdata = test_data)
+#rf_result <- postResample(rf_yhat, test_data$total_UPDRS)
+
+#rf_result
+
+#plot(rf_yhat, test_data$total_UPDRS)
+#abline(0, 1)
+```
+
+
+
+#### Performance SVM:
+
+```{r}
+
+svm_yhat <- predict(svm_count, newdata = test_scaled)
+svm_yhat <- svm_yhat * sd(test_data$total_UPDRS) + mean(test_data$total_UPDRS)
+svm_result <- postResample(svm_yhat, test_data$total_UPDRS)
+
+svm_result
+
+plot(svm_yhat, test_data$total_UPDRS)
+abline(0, 1)
+```
+
+
+
+#### Performance Neural Networks
+
+#### Two Hidden Layer model
+
+```{r}
+
+options(digits = 3)
+nn_result1 <- postResample(pred2, test_data$total_UPDRS)
+
+nn_result1
+plot(pred2, test_data$total_UPDRS)
+abline(0, 1)
+```
+
+#### One Hidden Layer Model
+
+```{r}
+
+options(scipen=999)
+nn_result2 <- postResample(pred1, test_data$total_UPDRS)
+nn_result2
+
+plot(pred1, test_data$total_UPDRS)
+abline(0, 1)
+```
+
+We can see there is a significant decrease in RMSE, Rsquared and MAE values for neural networks. This might be due to the additional outliers present in the data set.
+
+# Model Comparision
+
+
+```{r}
+final_dataframe = data.frame(Model =
+                        c('Random Forests', 'GBM', 'SVM', 'Neural Networks'),
+                          RMSE = c(rf_result[["RMSE"]],
+                                   gbm_result[['RMSE']],
+                                   svm_result[["RMSE"]],
+                                   nn_result1[["RMSE"]]),
+                          R2 = c(rf_result[["Rsquared"]],
+                                 gbm_result[["Rsquared"]],
+                                 svm_result[["Rsquared"]],
+                                 nn_result1[["Rsquared"]]),
+                          MAE = c(rf_result[["MAE"]],
+                                  gbm_result[["MAE"]],
+                                  svm_result[["MAE"]],
+                                  nn_result1[["MAE"]]))
+print(final_dataframe)
+```
+
+As observed from the model comparison, if Rsquared value is taken into account for best performance, then Random Forest performs the best for this data set. If RMSE value is taken into account then ANN 1-layer performs the best among the models.
+
+```{r}
+stopCluster(cl)
+```
+
+
